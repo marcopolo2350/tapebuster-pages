@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>TapeBuster: a video store you can walk around</title>
+<style>
+  :root {
+    --navy: #122a72; --navy-dark: #0b1c50; --navy-deep: #081538;
+    --gold: #f2b705; --gold-light: #ffd23d; --red: #e5484d; --cream: #f4efe6;
+    --panel: rgba(10, 20, 56, 0.92);
+    --sans: 'Arial', 'Helvetica Neue', sans-serif;
+    --display: 'Arial Black', 'Arial', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; background: #05070f; font-family: var(--sans); }
+  /* z-index:1 so the store is painted OVER the parked radio player at z-index 0
+     (see #radio-park). The HUD stays above both at z-index 10. */
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 1; }
+
+  /* ---------- loading ---------- */
+  /* Centered when it fits, SCROLLABLE when it doesn't (landscape-phone
+     repair): justify-content:center clips a too-tall flex column at BOTH
+     ends, which put BUILD MY STORE off-screen the moment a phone turned
+     sideways. The ::before/::after spacers are Safari-safe "safe center" —
+     they collapse to zero and let the panel scroll instead of clipping. */
+  #loading {
+    position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column;
+    align-items: center; gap: 18px; overflow-y: auto;
+    padding: max(16px, env(safe-area-inset-top)) 12px max(16px, env(safe-area-inset-bottom));
+    background: radial-gradient(ellipse at 50% 40%, #16296b 0%, #081538 70%);
+    color: var(--cream); transition: opacity .6s; text-align: center;
+  }
+  #loading::before, #loading::after { content: ''; flex: 1 0 0; }
+  #loading.done { opacity: 0; pointer-events: none; }
+  #loading .logo {
+    font-family: var(--display); font-style: italic; font-size: clamp(34px, 8vw, 64px);
+    color: var(--gold); letter-spacing: -1px;
+    text-shadow: 0 3px 0 var(--navy-dark), 0 8px 30px rgba(0,0,0,.6);
+  }
+  #loading .tag { font-size: 13px; letter-spacing: 4px; color: #9fb0e8; }
+  #load-bar { width: min(320px, 70vw); height: 10px; border: 2px solid var(--gold); border-radius: 6px; overflow: hidden; }
+  #load-fill { height: 100%; width: 0%; background: var(--gold); transition: width .2s; }
+  /* ONE BIG NUMBER, ONE SHORT SENTENCE, ONE NOTE. The loading screen answers
+     "how close am I to playing" and nothing else. No counters, no internal
+     vocabulary, no list of what the engine is doing. */
+  #load-headline { font-family: var(--display); font-size: clamp(18px, 4.5vw, 26px); color: var(--cream); letter-spacing: .5px; }
+  #load-pct { color: var(--gold-light); }
+  #load-status { font-size: 13px; color: #9fb0e8; min-height: 18px; }
+  #load-note { font-size: 11.5px; color: #7b88b8; max-width: 320px; line-height: 1.5; }
+  #load-start {
+    display: none; margin-top: 8px; font-family: var(--display); font-size: 18px;
+    background: var(--gold); color: var(--navy-dark); border: 0; border-radius: 10px;
+    padding: 14px 34px; cursor: pointer; letter-spacing: 1px;
+    box-shadow: 0 6px 0 #a87e04, 0 12px 24px rgba(0,0,0,.5);
+  }
+  #load-start:active { transform: translateY(3px); box-shadow: 0 3px 0 #a87e04; }
+
+  /* ---------- HUD chrome ---------- */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  #hud > * { pointer-events: auto; }
+
+  #topbar {
+    position: absolute; top: env(safe-area-inset-top, 0); left: 0; right: 0;
+    display: flex; gap: 8px; align-items: center; padding: 10px 12px;
+  }
+  #brand-mini {
+    font-family: var(--display); font-style: italic; color: var(--gold);
+    background: var(--navy-dark); border: 2px solid var(--gold); border-radius: 8px;
+    padding: 7px 10px; font-size: 13px; letter-spacing: 0.5px; user-select: none;
+  }
+  #searchbox { flex: 1; display: flex; max-width: 440px; position: relative; }
+  #search-input {
+    width: 100%; padding: 10px 34px 10px 14px; border-radius: 10px; border: 2px solid rgba(255, 210, 61, .5);
+    background: rgba(8, 18, 46, .82); color: var(--cream); font-size: 14px; outline: none;
+  }
+  #search-input:focus { border-color: var(--gold); }
+  #search-input::placeholder { color: #8b98c9; }
+  #search-clear {
+    position: absolute; right: 4px; top: 4px; bottom: 4px; width: 28px; border: 0; border-radius: 8px;
+    background: transparent; color: #8b98c9; font-size: 18px; cursor: pointer;
+  }
+  .tb-btn, #btn-clerk, #btn-mute, #btn-help {
+    border: 2px solid rgba(255, 210, 61, .5); background: rgba(8, 18, 46, .82); color: var(--cream);
+    border-radius: 10px; padding: 9px 12px; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  }
+  #btn-clerk:hover, #btn-mute:hover, #btn-help:hover, #btn-settings:hover { border-color: var(--gold); }
+  #btn-help { width: 38px; }
+  #btn-settings {
+    border: 2px solid rgba(255, 210, 61, .5); background: rgba(8, 18, 46, .82); color: var(--cream);
+    border-radius: 10px; padding: 9px 12px; font-size: 13px; cursor: pointer;
+  }
+
+  /* settings */
+  /* Settings is a bounded drawer, never a destination (phase-4 §17): the head
+     with its ✕ stays pinned, the BODY scrolls, and the panel can never grow
+     past the viewport — unbounded height is exactly how the mobile sheet
+     pushed its own close button off-screen and trapped the user. */
+  #panel-settings { top: 64px; right: 12px; width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 88px); }
+  .settings-body { padding: 16px; overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
+  .settings-body h4 { font-family: var(--display); color: var(--gold-light); letter-spacing: 1px; margin: 12px 0 6px; }
+  .settings-body h4:first-child { margin-top: 0; }
+  .st-note, .st-desc { font-size: 12px; color: #9fb0e8; line-height: 1.5; margin: 6px 0; }
+  .st-desc b { color: var(--gold-light); }
+  .st-modes { display: flex; gap: 8px; margin: 8px 0; }
+  .st-modes button {
+    flex: 1; font-family: var(--display); font-size: 12px; letter-spacing: .5px;
+    border: 2px solid rgba(255,255,255,.3); background: transparent; color: var(--cream);
+    border-radius: 10px; padding: 11px 6px; cursor: pointer;
+  }
+  .st-modes button.active { border-color: var(--gold); background: rgba(242,183,5,.16); color: var(--gold-light); }
+
+  /* ---------- WHERE TO WATCH ----------
+     A two-column ledger: provider on the left, what it entitles you to on the
+     right. There is deliberately NO "unavailable" styling in this block — the
+     data is presence-only, so the UI has no vocabulary for asserting absence. */
+  .where-to-watch { margin-top: 8px; }
+  .where-to-watch > b { font-family: var(--display); font-size: 11px; letter-spacing: 1px; color: var(--gold-light); }
+  .wtw-list { list-style: none; margin: 6px 0 4px; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; }
+  .wtw { display: contents; }
+  .wtw-svc { font-size: 11.5px; font-weight: 700; color: #e8ecfa; white-space: nowrap; }
+  .wtw-state { font-size: 11px; color: #9fb0e8; }
+  .wtw-state em { font-style: normal; font-size: 10px; color: #8b98c9; }
+  /* A service you actually subscribe to: this row is WHY the case is on a shelf. */
+  .wtw.is-yours .wtw-svc { color: #b8f5d5; }
+  .wtw.is-yours .wtw-state { color: #7fe3ae; font-weight: 700; }
+  /* Rent/buy is a purchase, never a subscription — it is never highlighted. */
+  .wtw.is-rent .wtw-svc, .wtw.is-rent .wtw-state { color: #8892b8; font-weight: 400; }
+  .wtw-stamp { font-size: 10.5px; color: var(--gold-light); letter-spacing: .3px; margin-top: 6px; }
+  /* What we do NOT know, stated plainly. Neutral colour on purpose: unknown is
+     not a warning and must never read as "no". */
+  .wtw-gap { font-size: 11px; color: #8892b8; line-height: 1.5; margin-top: 5px; }
+
+  .svc {
+    font-style: normal; font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 12px;
+    background: rgba(255,255,255,.12); color: #e8ecfa; border: 1px solid rgba(255,255,255,.2);
+  }
+  .svc-note { font-size: 10px; color: #8b98c9; margin-top: 5px; display: block; }
+  .svc-note a { color: #9fc0ff; }
+  .svc-line { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; align-items: baseline; }
+  .svc-line .svc { font-size: 9px; padding: 2px 6px; }
+  .svc.mine { background: rgba(63, 174, 122, .22); border-color: #3fae7a; color: #b8f5d5; font-weight: 800; }
+  /* Plain explanatory text inside a chip row — deliberately NOT a chip, because
+     it states what we do not know rather than asserting a service. */
+  .svc-plain { font-style: normal; color: #8892b8; font-size: 11px; line-height: 1.5; }
+
+  /* The MEMBERSHIP number, sitting beside the AVAILABILITY number in the chip.
+     Deliberately quieter than the headline and visually separated: they are two
+     different quantities and must never read as one figure restated. */
+  .chip-shelf {
+    font-style: normal; font-weight: 700; color: var(--gold-light);
+    background: rgba(242,183,5,.14); border-radius: 4px; padding: 1px 5px; margin-right: 6px;
+  }
+  /* Provider modes wrap onto their own rows — nine services will not fit one. */
+  .st-providers { flex-wrap: wrap; margin-top: 6px; }
+  .st-providers button { flex: 1 1 30%; font-size: 10.5px; padding: 8px 4px; }
+  .st-providers.hidden { display: none; }
+
+  .svc-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 8px 0; }
+  .svc-toggle {
+    font-size: 11px; font-weight: 700; border: 1.5px solid rgba(255,255,255,.3); border-radius: 8px;
+    background: transparent; color: var(--cream); padding: 8px 4px; cursor: pointer; white-space: nowrap;
+  }
+  .svc-toggle.active { border-color: #3fae7a; background: rgba(63, 174, 122, .16); color: #b8f5d5; }
+  .gold-outline {
+    width: 100%; font-family: var(--display); font-size: 11px; border: 2px solid var(--gold);
+    background: transparent; color: var(--gold-light); border-radius: 10px; padding: 11px; cursor: pointer;
+  }
+  .st-slider { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  .st-slider label { font-size: 11px; font-weight: 700; color: #9fb0e8; letter-spacing: .5px; white-space: nowrap; }
+  .st-slider input[type=range] { flex: 1; accent-color: var(--gold); }
+  .st-slider span { font-size: 11px; color: var(--gold-light); min-width: 34px; text-align: right; }
+
+  .filter-note {
+    padding: 8px 14px; background: rgba(63, 174, 122, .14); color: #b8f5d5; font-size: 11px;
+    font-weight: 700; letter-spacing: .5px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center;
+  }
+  /* The qualifier that scopes every watchable count — services · region ·
+     subscription. It always sits on its own line directly under the claim,
+     because the count is only true with it attached. */
+  .qual { flex-basis: 100%; font-weight: 700; letter-spacing: .4px; opacity: .85; }
+  .linkish { border: 0; background: none; color: #9fc0ff; cursor: pointer; font-size: 11px; text-decoration: underline; }
+  /* The eligible-vs-stocked reconciliation line. .bad is a product error, not
+     decoration — it must be impossible to mistake for the healthy state. */
+  .store-truth {
+    padding: 7px 14px; font-size: 10.5px; font-weight: 700; letter-spacing: .4px; line-height: 1.45;
+  }
+  .store-truth.ok { background: rgba(63, 174, 122, .10); color: #7fe3ae; }
+  .store-truth.note { background: rgba(255, 210, 61, .08); color: var(--gold-light); }
+  .store-truth.bad { background: rgba(214, 58, 58, .18); color: #ffc3c3; border-top: 1px solid rgba(255,90,90,.5); border-bottom: 1px solid rgba(255,90,90,.5); }
+  .count-note { padding: 10px 14px; font-size: 10px; color: #8b98c9; letter-spacing: .4px; text-align: center; }
+
+  #zone-chip {
+    position: absolute; top: 62px; left: 12px; background: var(--navy-dark);
+    border: 2px solid var(--gold); border-radius: 10px; padding: 7px 12px; color: var(--cream);
+    display: flex; flex-direction: column; line-height: 1.25; user-select: none;
+  }
+  #zone-chip b { font-family: var(--display); font-size: 13px; color: var(--gold-light); letter-spacing: .5px; }
+  #zone-chip span { font-size: 10px; color: #9fb0e8; letter-spacing: 2px; }
+
+  #lookat {
+    position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%);
+    background: var(--panel); border: 2px solid var(--gold); border-radius: 12px;
+    padding: 9px 16px; color: var(--cream); text-align: center; max-width: min(430px, 88vw);
+    backdrop-filter: blur(4px);
+  }
+  #lookat b { font-family: var(--display); font-size: 15px; display: block; color: #fff; }
+  #lookat span { font-size: 11px; color: #b9c4ea; display: block; margin-top: 2px; }
+  #lookat em { font-size: 10px; color: var(--gold-light); font-style: normal; letter-spacing: 1.5px; display: block; margin-top: 3px; }
+
+  /* Sits to the LEFT of the stack button and shares its baseline, so the
+     bottom-right corner keeps one row of controls rather than two stacks. */
+  #btn-crouch {
+    position: absolute; right: 132px; bottom: calc(14px + env(safe-area-inset-bottom, 0));
+    font-family: var(--display); font-size: 13px; letter-spacing: .5px;
+    background: var(--navy-dark); color: var(--cream); border: 2px solid rgba(255,210,61,.5);
+    border-radius: 12px; padding: 12px 14px; cursor: pointer;
+  }
+  #btn-crouch.active { border-color: var(--gold); background: rgba(242,183,5,.22); color: var(--gold-light); }
+  body.ui-mobile #btn-crouch { bottom: calc(12px + env(safe-area-inset-bottom, 0)); }
+  /* Secondary does not mean fiddly. 32px is a comfortable click and a mean
+     thumb target, so the shelf buttons grow on touch while staying visibly
+     lighter than the title arrows above them. */
+  body.ui-mobile .ins-shelf .shf { min-height: 40px; font-size: 11px; }
+  #btn-stack {
+    position: absolute; right: 14px; bottom: calc(14px + env(safe-area-inset-bottom, 0));
+    font-family: var(--display); font-size: 14px; letter-spacing: 1px;
+    background: var(--navy-dark); color: var(--cream); border: 2px solid var(--gold);
+    border-radius: 12px; padding: 12px 16px; cursor: pointer;
+  }
+  #btn-stack b {
+    display: inline-block; min-width: 22px; background: var(--gold); color: var(--navy-dark);
+    border-radius: 8px; padding: 1px 5px; margin-left: 6px;
+  }
+  #btn-stack.has-items { box-shadow: 0 0 18px rgba(242, 183, 5, .45); }
+
+  /* The chip carries the store's headline claim, and a claim needs its
+     qualifier attached: line 1 is the count, line 2 is the scope that makes it
+     true (your services · region · subscription). Sized to hold all nine
+     service names wrapped rather than truncating the scope away. */
+  /* The KNOWN ON YOUR SERVICES chip used to live here. It was a persistent
+     card over the shop floor — worst of all in landscape, where vertical
+     space is scarcest — and everything it said is already in Settings,
+     which renders the same claim() sentence. Removed rather than shrunk,
+     faded or auto-hidden: the viewport belongs to the store. */
+
+  #toast {
+    position: absolute; left: 50%; top: 108px; transform: translateX(-50%);
+    background: var(--gold); color: var(--navy-dark); font-weight: 800; font-size: 13px;
+    border-radius: 10px; padding: 9px 16px; max-width: 86vw; text-align: center;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+  }
+  #toast.pop { animation: pop .25s ease-out; }
+  @keyframes pop { from { transform: translateX(-50%) scale(.8); opacity: 0; } }
+
+  /* ---------- panels ---------- */
+  .panel {
+    position: fixed; z-index: 20; background: var(--panel); color: var(--cream);
+    border: 2px solid var(--gold); border-radius: 14px; backdrop-filter: blur(6px);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #panel-search, #panel-stack { top: 64px; right: 12px; width: min(430px, calc(100vw - 24px)); max-height: min(70vh, 640px); }
+  #panel-clerk { bottom: 12px; right: 12px; width: min(430px, calc(100vw - 24px)); height: min(560px, 78vh); }
+  .panel-head {
+    display: flex; justify-content: space-between; align-items: center; padding: 12px 14px;
+    background: var(--navy-dark); font-family: var(--display); letter-spacing: 1px; color: var(--gold-light);
+    flex: 0 0 auto;
+  }
+  .x { border: 0; background: transparent; color: #9fb0e8; font-size: 22px; cursor: pointer; line-height: 1; }
+  .x:hover { color: #fff; }
+  #panel-search, #panel-stack { overflow-y: auto; }
+  .empty { padding: 26px 18px; text-align: center; color: #9fb0e8; font-size: 14px; line-height: 1.6; }
+
+  .result { display: flex; gap: 10px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.07); align-items: center; }
+  .result img { width: 46px; height: 64px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; }
+  .r-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .r-info b { font-size: 14px; }
+  .r-info span { font-size: 11px; color: #b9c4ea; }
+  .r-info .addr { color: var(--gold-light); font-size: 10px; letter-spacing: .4px; }
+  .r-actions { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+  .badge { font-style: normal; font-size: 9px; padding: 2px 5px; border-radius: 4px; vertical-align: 2px; letter-spacing: .5px; }
+  .badge.movie { background: #2d3f8f; color: #cfe0ff; }
+  .badge.series { background: #7a3a8f; color: #f3d9ff; }
+
+  button.gold {
+    font-family: var(--display); font-size: 11px; letter-spacing: .5px; border: 0; border-radius: 8px;
+    background: var(--gold); color: var(--navy-dark); padding: 8px 10px; cursor: pointer;
+  }
+  button.gold:hover { background: var(--gold-light); }
+  button.ghost {
+    font-size: 11px; font-weight: 700; border: 1.5px solid rgba(255,255,255,.35); border-radius: 8px;
+    background: transparent; color: var(--cream); padding: 7px 10px; cursor: pointer;
+  }
+  button.ghost:hover { border-color: #fff; }
+  button:disabled { opacity: .55; cursor: default; }
+
+  .stack-total {
+    padding: 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    background: var(--navy-dark); font-size: 13px; position: sticky; bottom: 0;
+  }
+  .stack-total b { font-family: var(--display); color: var(--gold-light); }
+
+  /* clerk */
+  #clerk-log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .clerk-you { align-self: flex-end; background: var(--gold); color: var(--navy-dark); font-weight: 700; font-size: 13px; padding: 8px 12px; border-radius: 12px 12px 2px 12px; max-width: 85%; }
+  .clerk-msg { align-self: flex-start; background: rgba(255,255,255,.08); font-size: 13px; padding: 10px 12px; border-radius: 12px 12px 12px 2px; max-width: 95%; line-height: 1.45; }
+  .clerk-pick { display: flex; gap: 8px; align-items: center; background: rgba(0,0,0,.25); margin-top: 8px; border-radius: 8px; padding: 8px; }
+  .clerk-pick img { width: 36px; height: 50px; border-radius: 3px; object-fit: cover; }
+  .clerk-pick > div:not(.r-actions) { flex: 1; min-width: 0; }
+  /* Says which of the two sets a pick belongs to: the shop, or the catalogue
+     behind it. Without this the clerk could still imply a copy is out. */
+  /* Selector weight matters here: `.clerk-pick span` below is equally
+     specific and comes later, so a bare `.clerk-off` lost and the notice
+     rendered in the same muted blue as the metadata it must stand apart
+     from. Qualifying it wins on specificity rather than on order. */
+  .clerk-pick span.clerk-off { display: block; font-size: 10px; letter-spacing: .3px;
+    color: var(--gold-light); opacity: .95; }
+  .clerk-pick b { font-size: 12px; display: block; }
+  .clerk-pick span { font-size: 10px; color: #b9c4ea; }
+  #clerk-chips { display: flex; gap: 6px; padding: 8px 12px; flex-wrap: wrap; flex: 0 0 auto; }
+  #clerk-chips button { font-size: 11px; border: 1px solid rgba(255,210,61,.5); background: transparent; color: var(--cream); border-radius: 20px; padding: 5px 10px; cursor: pointer; }
+  #clerk-chips button:hover { border-color: var(--gold); }
+  #clerk-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid rgba(255,255,255,.1); flex: 0 0 auto; }
+  #clerk-form input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1.5px solid rgba(255,255,255,.25); background: rgba(0,0,0,.3); color: var(--cream); outline: none; font-size: 13px; }
+
+  /* title card */
+  /* BOUNDED BY THE VIEWPORT, AND SCROLLABLE INSIDE IT.
+     This was centred with translate(-50%,-50%) and given no max-height and no
+     overflow at all, so a card taller than the screen was clipped at BOTH ends
+     with no way to reach the buttons. On a landscape phone, where there are
+     only ~390 px of height for a poster, a synopsis, a provider list and two
+     actions, that is most cards.
+     100dvh, not 100vh: on mobile Safari 100vh is the height WITHOUT the
+     browser chrome, so a vh-bounded panel is still taller than the visible
+     area exactly when it matters. */
+  #title-card {
+    position: fixed; z-index: 30; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: min(520px, calc(100vw - 28px)); background: var(--panel); border: 2px solid var(--gold);
+    border-radius: 16px; color: var(--cream); padding: 18px; backdrop-filter: blur(8px);
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  }
+  #title-card .x { position: absolute; top: 8px; right: 10px; }
+  .tc-body { display: flex; gap: 14px; }
+  .tc-body img { width: 92px; height: 128px; object-fit: cover; border-radius: 6px; }
+  .tc-body h3 { font-family: var(--display); font-size: 18px; margin-bottom: 4px; }
+  .meta { font-size: 12px; color: var(--gold-light); margin: 3px 0; }
+  .syn { font-size: 13px; line-height: 1.5; margin: 6px 0; color: #dfe4f5; }
+  .who { font-size: 11px; color: #9fb0e8; line-height: 1.5; }
+  .addr { font-size: 11px; color: var(--gold-light); letter-spacing: .4px; margin-top: 6px; }
+  .avail { font-size: 10px; color: #8b98c9; margin-top: 6px; }
+  .avail a { color: #9fc0ff; }
+  .tc-actions { display: flex; gap: 10px; margin-top: 14px; }
+  .tc-actions button { flex: 1; padding: 12px; font-size: 13px; }
+
+  /* BROWSE THE SHELF FROM THE CARD. Sits under the actions so TAKE ME THERE
+     stays the primary move; walking is still the point of the store. */
+  .tc-next { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.12); }
+  .tc-next-head { font: 700 10px/1 var(--sans); letter-spacing: .16em; color: var(--gold); margin-bottom: 9px; }
+  .tc-next-pickers { display: flex; gap: 8px; }
+  .tc-next-pickers label { flex: 1; min-width: 0; display: block;
+    font: 700 9px/1 var(--sans); letter-spacing: .14em; color: #8b98c9; }
+  .tc-next-pickers select { width: 100%; margin-top: 4px; padding: 7px 6px;
+    background: rgba(0,0,0,.45); color: var(--cream); border: 1px solid rgba(255,255,255,.16);
+    border-radius: 4px; font: 500 12px/1.2 var(--sans); }
+  .tc-next-now { margin: 9px 0 8px; font: 500 11px/1.3 var(--sans); color: #8b98c9; }
+  .tc-next-btns { display: flex; gap: 8px; }
+  .tc-next-btns button { flex: 1; padding: 10px; font-size: 12px;
+    background: rgba(255,255,255,.07); color: var(--cream);
+    border: 1px solid rgba(255,255,255,.18); border-radius: 4px; }
+  .tc-next-btns button:active { background: rgba(255,255,255,.15); }
+
+  /* inspect */
+  /* Same defect, same fix: no max-height and no overflow meant the case detail
+     ran off the screen and took its buttons with it. */
+  #panel-inspect {
+    position: fixed; z-index: 25; right: 16px; top: 50%; transform: translateY(-50%);
+    width: min(340px, calc(100vw - 32px)); background: var(--panel); border: 2px solid var(--gold);
+    border-radius: 16px; color: var(--cream); padding: 16px; backdrop-filter: blur(6px);
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  }
+  .ins-meta h3 { font-family: var(--display); font-size: 17px; }
+  /* FLIP ALONG THE SHELF — the first thing in the sheet, because it is the
+     control the shopper was looking for and could not find. It sits above the
+     title rather than below the buttons so it survives the mobile pull-up,
+     which shows the top of this panel and scrolls the rest. Blue back, gold
+     forward: the store's own two colours, told apart by hue AND by side, so
+     the pair still reads without colour. */
+  .ins-browse { display: flex; align-items: center; gap: 8px; margin: -2px 0 8px; }
+  .ins-browse .brw {
+    flex: 0 0 auto; width: 40px; height: 36px; border-radius: 9px; cursor: pointer;
+    font-size: 13px; line-height: 1; padding: 0; border: 2px solid transparent;
+  }
+  .brw-prev { background: var(--navy); color: var(--cream); border-color: #4b6bd8; }
+  .brw-next { background: var(--gold); color: var(--navy-dark); border-color: var(--gold-light); }
+  .ins-browse .brw:hover { filter: brightness(1.18); }
+  .ins-browse .brw:active { transform: translateY(1px); }
+  .brw-now {
+    flex: 1 1 auto; min-width: 0; text-align: center; font-size: 10px;
+    color: #9fb0e8; letter-spacing: .3px; line-height: 1.35;
+  }
+  .brw-now b { display: block; font-size: 11px; color: var(--cream); letter-spacing: .5px; }
+  /* SHELF NAVIGATION IS SECONDARY, AND MUST LOOK IT. The big solid arrows
+     change the TITLE; these change the SHELF. Two controls that did the same
+     job at two scopes would be unreadable if they were styled alike, so these
+     are outlined rather than filled, wear words instead of glyphs, and sit on
+     their own line under the pair they qualify. */
+  .ins-shelf { display: flex; gap: 8px; margin: -4px 0 6px; }
+  .ins-shelf .shf {
+    flex: 1 1 0; min-height: 32px; padding: 7px 6px; font-size: 10px; letter-spacing: .6px;
+    border-radius: 8px; cursor: pointer; color: var(--cream);
+    background: rgba(18,42,114,.55); border: 1px solid #4b6bd8;
+  }
+  .ins-shelf .shf:hover:not(:disabled) { background: var(--navy); border-color: var(--gold); }
+  .ins-shelf .shf:active:not(:disabled) { transform: translateY(1px); }
+  /* The section edge is stated, not hidden: the button stays in place so the
+     row does not reflow, and reads as unavailable rather than missing. */
+  .ins-shelf .shf:disabled { opacity: .32; cursor: default; border-style: dashed; }
+  .ins-scope {
+    font-size: 10px; color: #8b98c9; letter-spacing: .3px; text-align: center;
+    margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px solid rgba(242,183,5,.22);
+  }
+  .hint { font-size: 10px; color: #8b98c9; margin-top: 8px; letter-spacing: .3px; }
+  .ins-actions { display: flex; gap: 10px; margin-top: 12px; }
+  .ins-actions button { flex: 1; padding: 12px; font-size: 12px; }
+
+  #vignette {
+    position: fixed; inset: 0; z-index: 15; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 48%, transparent 30%, rgba(3, 5, 14, .62) 100%);
+  }
+
+  /* receipt */
+  #receipt { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; background: rgba(3,5,14,.6); }
+  .receipt-paper {
+    background: #f7f4ea; color: #222; width: min(360px, 88vw); padding: 26px 22px; border-radius: 4px;
+    font-family: 'Courier New', monospace; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+  .receipt-paper h3 { font-family: var(--display); font-style: italic; text-align: center; color: var(--navy); font-size: 24px; }
+  .rc-sub { text-align: center; font-size: 11px; margin: 6px 0 12px; }
+  .receipt-paper table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  .receipt-paper td { padding: 4px 2px; border-bottom: 1px dashed #bbb; }
+  .rc-total { text-align: center; font-weight: 700; margin: 12px 0 6px; }
+  .rc-msg { text-align: center; font-size: 11px; margin-bottom: 14px; }
+  .receipt-paper .gold { width: 100%; padding: 12px; font-size: 13px; }
+
+  /* help */
+  #help {
+    position: fixed; inset: 0; z-index: 50; background: rgba(3,5,14,.78); color: var(--cream);
+    display: flex; align-items: center; justify-content: center; text-align: center;
+  }
+  #help > div { max-width: 720px; width: calc(100% - 32px); max-height: calc(100dvh - 32px);
+    overflow-y: auto; padding: 26px 28px; line-height: 1.9; font-size: 14px;
+    background: var(--panel); border: 2px solid var(--gold); border-radius: 14px; }
+  #help h3 { font-family: var(--display); color: var(--gold); margin-bottom: 14px; }
+  #help h5 { font-family: var(--display); color: var(--gold-light); font-size: 12px;
+    letter-spacing: .12em; margin-bottom: 6px; }
+  #help kbd { background: var(--navy-dark); border: 1px solid var(--gold); border-radius: 5px; padding: 2px 7px; font-size: 12px; }
+  /* Three columns that stack on a phone; each is one task, not a manual. */
+  .ht-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 18px; text-align: left; margin-bottom: 18px; }
+  .ht-cols b { color: var(--gold-light); }
+  #ht-tutorial { font-family: var(--display); font-size: 14px; padding: 12px 26px;
+    border-radius: 10px; cursor: pointer; }
+
+  /* SETTINGS GROUPS. Five closed drawers instead of one thirteen-heading
+     scroll: the whole panel is scannable before anything is read. */
+  .st-group { border: 1px solid rgba(255,255,255,.14); border-radius: 10px;
+    margin: 10px 0; background: rgba(0,0,0,.18); }
+  .st-group > summary { cursor: pointer; padding: 12px 14px; font-family: var(--display);
+    font-size: 13px; letter-spacing: .12em; color: var(--gold-light); list-style: none; }
+  .st-group > summary::before { content: '▸ '; color: var(--gold); }
+  .st-group[open] > summary::before { content: '▾ '; }
+  .st-group > summary::-webkit-details-marker { display: none; }
+  .st-group > *:not(summary) { margin-left: 14px; margin-right: 14px; }
+  .st-group > *:last-child { margin-bottom: 14px; }
+  .st-advanced { border-top: 1px dashed rgba(255,255,255,.15); margin-top: 12px; padding-top: 8px; }
+  .st-advanced > summary { cursor: pointer; font-size: 11px; letter-spacing: .1em;
+    color: #8b98c9; list-style: none; padding: 4px 0; }
+  .st-advanced > summary::before { content: '▸ '; }
+  .st-advanced[open] > summary::before { content: '▾ '; }
+  .st-advanced > summary::-webkit-details-marker { display: none; }
+
+  /* debug */
+  #debug {
+    position: fixed; left: 10px; bottom: 10px; z-index: 60; background: rgba(0,0,0,.78); color: #7dff9a;
+    font: 11px/1.5 'Consolas', monospace; padding: 10px 12px; border-radius: 8px; min-width: 230px;
+  }
+  #debug label { display: inline-flex; gap: 4px; margin-right: 10px; color: #9fb0e8; }
+  #dbg-map { image-rendering: pixelated; margin-top: 6px; border: 1px solid #334; }
+
+  #restock-veil {
+    position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: rgba(6, 12, 36, .88); backdrop-filter: blur(3px); color: var(--cream);
+  }
+  #restock-veil .logo {
+    font-family: var(--display); font-style: italic; font-size: 34px; color: var(--gold);
+  }
+  #restock-msg { font-size: 13px; letter-spacing: 3px; color: #9fb0e8; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+
+  .hidden { display: none !important; }
+
+  /* Mobile layout is driven by Experience Mode (Settings), not only the
+     viewport: ModeManager toggles body.ui-mobile / body.ui-desktop. */
+  body.ui-mobile #brand-mini { display: none; }
+  body.ui-mobile #btn-clerk { font-size: 11px; padding: 9px 8px; }
+  body.ui-mobile #zone-chip { top: 58px; }
+  body.ui-mobile #panel-search, body.ui-mobile #panel-stack {
+    top: auto; bottom: 0; right: 0; left: 0; width: 100vw; max-height: 62vh;
+    border-radius: 14px 14px 0 0; border-bottom: 0;
+  }
+  body.ui-mobile #panel-clerk { bottom: 0; right: 0; left: 0; width: 100vw; height: 66vh; border-radius: 14px 14px 0 0; border-bottom: 0; }
+  body.ui-mobile #panel-settings { top: auto; bottom: 0; right: 0; left: 0; width: 100vw; max-height: 72vh; border-radius: 14px 14px 0 0; border-bottom: 0; }
+  /* PORTRAIT: A BOTTOM SHEET THAT LEAVES THE CASE VISIBLE.
+     A held case covers y 49.3%-75.2% of a portrait viewport (measured with
+     the real camera at the default hold distance), so a 72dvh sheet buried
+     the object being inspected. The sheet is now bounded to the lower 46%
+     and the case is lifted to meet it — see Inspector.holdRise(), which does
+     the other half of this and derives the lift from the frustum rather than
+     from pixels. Nothing is hidden: the sheet scrolls, and the type stays
+     the same size. */
+  body.ui-mobile #panel-inspect {
+    right: 0; left: 0; top: auto; bottom: 0; transform: none; width: 100vw;
+    border-radius: 14px 14px 0 0; border-bottom: 0;
+    max-height: min(46dvh, calc(100dvh - 12px));
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+  body.ui-mobile #lookat { bottom: 78px; }
+  body.ui-mobile #btn-stack { bottom: calc(12px + env(safe-area-inset-bottom, 0)); }
+/* ---- parked radio player ----
+   Full 200x200 (YouTube's documented minimum), positioned below the fold.
+   Do NOT shrink this or set display:none — iOS stops playing it. */
+/* ON SCREEN, BUT BEHIND THE STORE.
+   bottom:-232px put this entirely outside the viewport, which is the same
+   hidden-player trap as the old 1x1 embed wearing a bigger number: iOS does
+   not reliably start media in an element it is not rendering, and on the
+   device nothing ever played. It sits at the origin now, full size, genuinely
+   laid out and rendered — and the WebGL canvas is painted over the top of it,
+   so it costs exactly zero gameplay pixels while still being a real player.
+   Never give this display:none, negative offsets, or zero size. */
+#radio-park{position:fixed;left:0;top:0;width:200px;height:200px;z-index:0;
+  pointer-events:none}
+#radio-embed{width:200px;height:200px}
+#radio-embed iframe{width:200px;height:200px;display:block;border:0}
+/* first-run tutorial */
+/* ABOVE THE LOADING SCREEN (z-index 100), not below it. At 90 the cards
+   rendered behind a still-visible loader and could never be tapped. */
+#tutorial{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;
+  padding:max(12px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom));
+  background:rgba(4,7,18,.82);backdrop-filter:blur(4px);overflow-y:auto}
+#tutorial.hidden{display:none}
+#tut-card{width:min(420px,100%);background:var(--panel);border:2px solid var(--gold);
+  border-radius:14px;padding:20px 18px;text-align:center;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+#tut-brand{font-family:var(--display);font-style:italic;color:var(--gold);font-size:15px;letter-spacing:.5px}
+#tut-step{font-size:11px;letter-spacing:.18em;color:#9fb0e8;margin-top:10px;min-height:14px}
+.tut-h{font-family:var(--display);font-size:26px;color:var(--gold-light);margin-top:6px;letter-spacing:.5px}
+.tut-p{font-size:14px;line-height:1.55;color:var(--cream);margin-top:10px}
+#tut-btns{display:flex;gap:10px;margin-top:20px}
+#tut-btns button{flex:1;font-family:var(--display);font-size:13px;letter-spacing:.5px;cursor:pointer;
+  border-radius:10px;padding:13px 8px;border:2px solid rgba(255,255,255,.3);
+  background:transparent;color:var(--cream)}
+#tut-next{border-color:var(--gold)!important;background:rgba(242,183,5,.18)!important;color:var(--gold-light)!important}
+#tut-skip{margin-top:12px;background:none;border:0;color:#9fb0e8;font-size:12px;
+  text-decoration:underline;cursor:pointer;padding:6px}
+/* Landscape phones: the card must not need scrolling to reach its buttons. */
+@media (orientation:landscape) and (max-height:460px){
+  #tut-card{padding:14px 16px}
+  #tut-brand{font-size:13px}
+  .tut-h{font-size:20px;margin-top:2px}
+  .tut-p{font-size:13px;margin-top:6px}
+  #tut-btns{margin-top:12px}
+  #tut-btns button{padding:10px 8px}
+}
+/* now playing, in settings */
+.st-now{padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.16);
+  background:rgba(0,0,0,.22);margin:8px 0}
+#st-now-station{font-size:11px;letter-spacing:.14em;opacity:.75;text-transform:uppercase}
+#st-now-track{font-size:13px;line-height:1.3;margin-top:3px}
+#st-now-trouble{font-size:11px;line-height:1.35;margin-top:5px;color:#ffb4a8}
+#st-now-trouble.hidden{display:none}
+/* audio probe readout */
+.st-probe-out{margin:8px 0 0;padding:8px;border-radius:8px;background:rgba(0,0,0,.35);
+  border:1px solid rgba(255,255,255,.16);font-size:11px;line-height:1.45;
+  white-space:pre-wrap;word-break:break-word;max-height:180px;overflow-y:auto;color:#cdd6f4}
+.st-probe-out.hidden{display:none}
+/* station dial + custom playlists */
+.st-stations{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px;margin:8px 0}
+.st-stations button{font-family:var(--display);font-size:11px;letter-spacing:.4px;
+  border:2px solid rgba(255,255,255,.3);background:transparent;color:var(--cream);
+  border-radius:10px;padding:10px 6px;cursor:pointer}
+.st-stations button.active{border-color:var(--gold);background:rgba(242,183,5,.16);color:var(--gold-light)}
+.st-custom-row{display:grid;grid-template-columns:1fr auto auto auto auto;align-items:center;gap:8px;
+  padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,.16);margin:6px 0}
+.st-custom-row.active{border-color:var(--gold);background:rgba(242,183,5,.12)}
+.st-custom-name{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-custom-by{font-size:11px;color:#9fb0e8;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-custom-row button{width:30px;height:28px;border-radius:6px;cursor:pointer;
+  border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.06);color:inherit}
+/* An armed delete has to LOOK armed, or the second tap is still a surprise.
+   It widens to fit the word, which is also what stops a thumb landing on it
+   by muscle memory in the same place the small ✕ used to be. */
+.st-custom-row button.armed{width:auto;padding:0 9px;font:800 10px/1 var(--sans);letter-spacing:.08em;
+  border-color:var(--red);background:rgba(229,72,77,.22);color:#ffd9da}
+.st-custom-edit{min-width:0;font-size:13px;padding:5px 7px;border-radius:6px;
+  border:1px solid var(--gold);background:rgba(0,0,0,.45);color:var(--cream)}
+
+/* ---- MOBILE LANDSCAPE ----------------------------------------------------
+   A phone on its side has roughly 390 px of height, and the topbar was taking
+   ~60 px of it — 15% of the store, permanently, for a brand badge and a search
+   field nobody uses while walking. There were no responsive rules here at all.
+
+   The rule is: the viewport belongs to the store. Anything that is not needed
+   WHILE WALKING either shrinks or goes away. Nothing is shrunk to the point of
+   being unreadable or untappable — every control below keeps a 34 px hit box,
+   which is still a comfortable thumb target. */
+@media (orientation: landscape) and (max-height: 460px) {
+  #topbar { padding: 5px 8px; gap: 6px; }
+  /* Pure branding. It says nothing a shopper needs mid-aisle, and the store
+     itself is the branding. */
+  #brand-mini { display: none; }
+  #searchbox { max-width: 210px; }
+  #search-input { padding: 6px 30px 6px 10px; font-size: 13px; }
+  .tb-btn, #btn-clerk, #btn-mute, #btn-help, #btn-settings {
+    padding: 7px 9px; font-size: 12px;
+  }
+  #btn-help { width: 32px; }
+  /* The department chip is worth keeping — it is how you know where you are —
+     but it can be one compact line instead of two. */
+  #zone-chip { padding: 5px 9px; }
+  #zone-label { font-size: 11px; }
+  #zone-code { font-size: 9px; }
+  body.ui-mobile #zone-chip { top: 44px; }
+  body.ui-mobile #lookat { bottom: 60px; }
+  /* Settings must never become a full-screen takeover on a short viewport. */
+  #panel-settings { top: 46px; max-height: calc(100vh - 58px); }
+}
+
+/* POPUPS IN LANDSCAPE. ~390 px of height total, so the card becomes a short
+   scrollable sheet with a smaller poster rather than a tall panel that runs
+   off both ends. Text stays readable and the actions stay reachable. */
+@media (orientation: landscape) and (max-height: 460px) {
+  #title-card {
+    padding: 12px 14px;
+    width: min(560px, calc(100vw - 20px));
+    max-height: calc(100dvh - 12px);
+  }
+  #title-card .tc-body img { width: 66px; height: 92px; }
+  #title-card h3, .tc-body h3 { font-size: 15px; }
+  .syn { font-size: 12px; line-height: 1.45; }
+  /* The lead synopsis: the first thing read on any title surface. */
+  .syn-lead { font-size: 13px; line-height: 1.55; margin: 8px 0; color: var(--cream); }
+  .syn-soft { color: #8b98c9; font-style: italic; }
+  /* Secondary facts fold away instead of pushing the blurb below the fold. */
+  .sub-details { margin-top: 8px; border-top: 1px solid rgba(255,255,255,.12); padding-top: 6px; }
+  .sub-details > summary { cursor: pointer; font: 700 10px/1.6 var(--sans); letter-spacing: .14em;
+    color: #8b98c9; list-style: none; }
+  .sub-details > summary::before { content: '▸ '; color: var(--gold); }
+  .sub-details[open] > summary::before { content: '▾ '; }
+  .sub-details > summary::-webkit-details-marker { display: none; }
+  /* LANDSCAPE: THE SHEET MOVES BESIDE THE CASE, NOT OVER IT.
+     This rule used to raise the bottom sheet to 100dvh, which on a short
+     landscape phone meant the panel covered the entire viewport and the case
+     with it. In landscape the held case is only ~10.6% of the viewport WIDE
+     (x 44.7%-55.3%, measured), so the whole right-hand column is free: a side
+     sheet clears the object completely and gains full height for content, so
+     nothing shrinks and nothing is hidden.
+     The `padding` SHORTHAND would reset the safe-area padding-bottom set for
+     this selector above, so the insets are restated here — and the right
+     inset matters now that the panel is against that edge. */
+  body.ui-mobile #panel-inspect {
+    left: auto; right: 0; top: 0; bottom: 0; transform: none;
+    width: min(340px, 42vw);
+    max-height: none; height: 100dvh;
+    border-radius: 14px 0 0 14px; border-right: 0; border-bottom: 2px solid var(--gold);
+    padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+             max(10px, env(safe-area-inset-bottom)) 14px;
+  }
+  .ins-actions button { padding: 9px; }
+  body.ui-mobile #panel-clerk { height: calc(100dvh - 8px); }
+}
+
+/* Very short viewports (landscape on a small phone): the search field goes
+   too, reachable from the CLERK panel, which is where you would ask anyway. */
+@media (orientation: landscape) and (max-height: 380px) {
+  #searchbox { max-width: 150px; }
+  #zone-code { display: none; }
+}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="loading">
+  <div class="logo">TAPEBUSTER</div>
+  <div class="tag">MOVIES · SERIES · SNACKS</div>
+  <div id="load-headline">Loading store<span id="load-pct"></span></div>
+  <div id="load-bar"><div id="load-fill"></div></div>
+  <div id="load-status">Warming up the neon</div>
+  <div id="load-note">First load takes a little longer while the store prepares.</div>
+  <button id="load-start">STEP INSIDE</button>
+</div>
+
+<div id="hud">
+  <div id="topbar">
+    <div id="brand-mini">TAPEBUSTER</div>
+    <div id="searchbox">
+      <input id="search-input" type="text" placeholder="Search movies, series, people…" autocomplete="off">
+      <button id="search-clear">×</button>
+    </div>
+    <button id="btn-clerk">🎧 CLERK</button>
+    <button id="btn-mute">🔊</button>
+    <button id="btn-settings">⚙</button>
+    <button id="btn-help">?</button>
+  </div>
+  <div id="zone-chip"><b id="zone-label">FRONT OF STORE</b><span id="zone-code">WELCOME</span></div>
+  <div id="lookat" class="hidden"><b></b><span></span><em></em></div>
+  <!-- CROUCH. A bottom shelf sits near the floor and from 1.62m you can only
+       look at it edge-on. Desktop holds C or Ctrl; touch has no spare key, so
+       it gets a toggle button beside the stack. -->
+  <button id="btn-crouch" title="Bend down to the bottom shelf (C)">🧎 CROUCH</button>
+  <button id="btn-stack">STACK <b id="stack-count">0</b></button>
+  <div id="toast" class="hidden"></div>
+</div>
+
+<div id="panel-search" class="panel hidden"></div>
+<div id="panel-stack" class="panel hidden"></div>
+<div id="panel-clerk" class="panel hidden"></div>
+<div id="panel-settings" class="panel hidden"></div>
+<div id="panel-inspect" class="hidden"></div>
+<div id="title-card" class="hidden"></div>
+<div id="vignette" class="hidden"></div>
+<div id="receipt" class="hidden"></div>
+
+<!-- HOW TO PLAY. Settings is for changing things; this is for understanding
+     them. The two used to be one giant panel, and the manual buried the
+     switches while the switches interrupted the manual. -->
+<div id="help" class="hidden">
+  <div>
+    <h3>HOW TO PLAY</h3>
+    <div class="ht-cols">
+      <div>
+        <h5>MOVE</h5>
+        <b>Walk</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><br>
+        <b>Look</b> arrow keys, or drag the mouse<br>
+        <b>Crouch</b> hold <kbd>C</kbd> for the bottom shelf<br>
+        <b>Stroll</b> click anywhere on the floor<br>
+        <b>Zoom</b> scroll
+      </div>
+      <div>
+        <h5>INTERACT</h5>
+        <b>Pick up</b> click a case<br>
+        <b>Flip it</b> tap the case; drag rotates<br>
+        <b>This shelf</b> the big &#9664; &#9654; arrows<br>
+        step through the titles on it<br>
+        <b>This section</b> PREV SHELF / NEXT SHELF<br>
+        move to another shelf<br>
+        <b>Keep it</b> ADD TO STACK
+      </div>
+      <div>
+        <h5>ON A PHONE</h5>
+        <b>Left side</b> hold to walk<br>
+        <b>Right side</b> swipe to look<br>
+        <b>CROUCH</b> button for the bottom shelf<br>
+        <b>Pinch</b> zoom<br>
+        <b>Tap a case</b> to pick it up
+      </div>
+    </div>
+    <p style="text-align:left;font-size:12px;color:#9fb0e8;margin:-6px 0 14px">
+      The large arrows change the title; the shelf buttons change the shelf. Shelf
+      browsing stays inside the section you are in, and the button greys out at its edge.
+      Controls feel backwards? Settings &rarr; CONTROLS has separate switches for
+      looking and for walking. Radio stations and your own playlists (add, rename,
+      delete) live in Settings &rarr; SOUND &amp; MUSIC.
+    </p>
+    <button id="ht-tutorial" class="gold">▶ PLAY THE TUTORIAL</button>
+    <span style="color:#8b98c9;font-size:12px;display:block;margin-top:10px">tap outside this card to close</span>
+  </div>
+</div>
+
+<!-- VIRTUAL THUMBSTICK. Touch had no continuous walk control at all: the only
+     way to move was to tap a destination and be walked there, which stops dead
+     on arrival — that is the "movement feels like discrete steps" report, and
+     no amount of smoothing the ROUTE could fix it, because the route was never
+     the thing being repeated. It appears where the thumb lands rather than
+     sitting in a fixed corner, so it costs no permanent screen space. -->
+<div id="stick" class="hidden"><div id="stick-knob"></div></div>
+
+<!-- THE PLAYER, PARKED. There is no music dock on the shop floor any more:
+     a persistent web-player card across the bottom of a phone is exactly the
+     kind of chrome the store should not have, and every control now lives in
+     Settings.
+
+     The embed itself cannot simply be deleted or display:none'd. It has to stay
+     laid out at 200x200 — YouTube's documented minimum — or iOS will not play
+     it. So it is parked just below the viewport edge: full size, never hidden,
+     never over the store. That is a deliberate compromise between "a real
+     visible player" and "nothing on the shop floor", and the shop floor wins. -->
+<div id="radio-park"><div id="radio-embed"></div></div>
+
+<!-- FIRST-RUN TUTORIAL. Shown once, replayable from Settings. Deliberately
+     not a permanent HUD hint: this store has just spent a whole pass clearing
+     chrome off the viewport and is not about to add some back. -->
+<div id="tutorial" class="hidden">
+  <div id="tut-card">
+    <div id="tut-brand">WELCOME TO TAPEBUSTER</div>
+    <div id="tut-step"></div>
+    <div id="tut-body"></div>
+    <div id="tut-btns">
+      <button id="tut-back">BACK</button>
+      <button id="tut-next">NEXT</button>
+    </div>
+    <button id="tut-skip">SKIP TUTORIAL</button>
+  </div>
+</div>
+
+<div id="debug" class="hidden"></div>
+
+<div id="restock-veil" class="hidden">
+  <div class="logo">TAPEBUSTER</div>
+  <div id="restock-msg">RESTOCKING YOUR STORE…</div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script type="module" src="./src/onboard.js"></script>
+</body>
+</html>
